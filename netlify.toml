@@ -1,4 +1,4 @@
 [build]
   base = "smart-city"
   command = "npm run build"
-  publish = "smart-city/dist"
+  publish = "dist"
