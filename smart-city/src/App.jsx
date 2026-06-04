@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const API = "http://localhost:3001";
 
 /* ─── DESIGN TOKENS ─────────────────────────────────────────────── */
 // Injecting global styles for the enterprise Smart City design system
@@ -155,10 +155,48 @@ const validateReadability = (text) => {
   if (upperRatio > 0.8 && t.length > 10) return { readable: false, reason: "Please avoid writing in ALL CAPS. Describe the issue normally." };
 
   // Check for recognisable English / municipal words — at least some must exist
-  const meaningfulWords = /water|leak|pipe|electric|power|light|road|pothole|sewage|drain|crack|broken|flood|burst|smell|building|park|fence|sign|lamp|street|pavement|tar|wall|roof|window|door|rubbish|waste|fire|smoke|tree|wire|cable|manhole|bridge|pavement|sidewalk|block|meter|pump|pump|tank|valve|motor|geyser|pool|dam|river|storm|sewer|toilet|toilet|tap|tap|gate|gate|grass|grass|animal|animal|noise|noise|vandal|graffiti|spray|paint|burn|collapse|fallen|unsafe|danger|hazard|urgent|report|complaint|issue|problem|fault|damage/;
+  const meaningfulWords = /water|leak|pipe|electric|power|light|road|pothole|sewage|drain|crack|broken|flood|burst|smell|building|park|fence|sign|lamp|street|pavement|tar|wall|roof|window|door|rubbish|waste|fire|smoke|tree|wire|cable|manhole|bridge|sidewalk|block|meter|pump|tank|valve|motor|geyser|pool|dam|river|storm|sewer|toilet|tap|gate|grass|animal|noise|vandal|graffiti|spray|paint|burn|collapse|fallen|unsafe|danger|hazard|urgent|report|complaint|issue|problem|fault|damage/;
   if (!meaningfulWords.test(t.toLowerCase())) return { readable: false, reason: "Your description doesn\'t seem to relate to a municipal issue. Please describe a specific problem (e.g. water leak, pothole, electricity fault)." };
 
   return { readable: true, reason: "" };
+};
+
+// ── Category mismatch detector ────────────────────────────────────
+const CATEGORY_KEYWORDS = {
+  water:       /water|leak|leaking|pipe|burst|flood|tap|drip|pressure|geyser|meter|valve|pump|dam|river|pool|tank|standpipe|no water|water cut/,
+  electricity: /electric|electricity|power|light|streetlight|outage|blackout|spark|wire|cable|trip|meter|prepaid|transformer|pylon|no power|power cut/,
+  pothole:     /pothole|pot hole|road|crack|tar|tarmac|asphalt|pavement|roadway|sunken|bump|street damage|road surface|traffic light|traffic signal|speed bump|storm drain|gutter/,
+  sewage:      /sewage|sewer|blockage|blocked drain|overflow|overflowing|smell|stench|manhole|raw sewage|waste water|wastewater|toilet overflow|drain overflow|drain blocked/,
+  facility:    /park|bench|playground|building|broken|vandal|graffiti|rubbish|refuse|waste|litter|dump|fence|wall|gate|sign|community hall|sports field|library|clinic|toilet|grass|overgrown|tree|fallen tree|animal|stray|noise|fire|smoke|abandoned/,
+};
+
+const CATEGORY_LABELS = {
+  water:       "Water Leak",
+  electricity: "Electricity Fault",
+  pothole:     "Pothole",
+  sewage:      "Sewage Blockage",
+  facility:    "Public Facility",
+};
+
+const detectDescriptionCategory = (text) => {
+  const t = text.toLowerCase();
+  for (const [cat, pattern] of Object.entries(CATEGORY_KEYWORDS)) {
+    if (pattern.test(t)) return cat;
+  }
+  return null;
+};
+
+const validateCategoryMatch = (selectedCategory, description) => {
+  if (!description || description.trim().length < 15) return { match: true };
+  const detected = detectDescriptionCategory(description);
+  if (!detected) return { match: true }; // can't determine — allow through
+  if (detected === selectedCategory) return { match: true };
+  return {
+    match: false,
+    detectedLabel: CATEGORY_LABELS[detected] || detected,
+    selectedLabel: CATEGORY_LABELS[selectedCategory] || selectedCategory,
+    reason: `Your description sounds like a "${CATEGORY_LABELS[detected] || detected}" issue, but you selected "${CATEGORY_LABELS[selectedCategory] || selectedCategory}". Please re-enter your description to match the selected category, or go back and select the correct category.`,
+  };
 };
 
 // ── Duplicate / similarity detector ──────────────────────────────
@@ -236,18 +274,20 @@ const aiClassify = (description) => {
   let priorityScore = 0;
 
   const priorityRules = [
-    // Critical signals (+10 each)
-    { pattern: /danger|dangerous|life.?threatening|injury|injured|death|collapsed|collapse|explosion|exploded|fire|burning|emergency|electrocution|electrocuted|sparking wire|exposed wire|raw sewage|flooding street|main road|primary road/, points: 10 },
-    // Critical signals (+8)
-    { pattern: /urgent|critical|hazard|accident|burst main|burst pipe|major flood|road closed|no access|hospital|school|clinic|blocked access/, points: 8 },
-    // High signals (+5)
-    { pattern: /large|major|severe|bad|serious|significant|multiple|several|many|week|weeks|days|months|long time|spreading|getting worse|worsening|escalating|affecting many|whole street|whole area|neighbourhood/, points: 5 },
-    // High signals (+4)
-    { pattern: /no water|no electricity|no power|complete|entire|whole block|main road|busy road|traffic/, points: 4 },
-    // Medium signals (+2)
-    { pattern: /moderate|medium|some|occasional|intermittent|sometimes|slow|building up/, points: 2 },
-    // Low signals (-3)
-    { pattern: /small|minor|slight|little|tiny|hairline|surface|cosmetic|not urgent|low priority/, points: -3 },
+    // ── CRITICAL: immediate threat to life, safety, or critical infrastructure (+15) ──
+    { pattern: /fire|burning|burnt down|gas leak|gas pipe burst|building collapse|collapsed building|structure collapse|explosion|exploded|detonation|chemical spill|hazardous spill|toxic leak|electrocution|electrocuted|live wire down|downed power line|major flood|flash flood|widespread flooding|mass casualty|multiple injuries|fatality|death|someone died|person trapped|trapped inside|emergency evacuation|evacuated|widespread power failure|grid failure|substation fire|substation explosion/, points: 15 },
+    // ── CRITICAL: emergency language (+12) ──
+    { pattern: /life.?threatening|immediate danger|serious injury|injured badly|bleeding|unconscious|not breathing|rescue needed|emergency services|ambulance called|fire brigade|people in danger|children in danger|danger to life/, points: 12 },
+    // ── HIGH: significant service disruption affecting many residents (+8) ──
+    { pattern: /no water|water outage|water cut|burst main|burst water main|sewage overflow|sewage flooding|neighbourhood|whole street|whole area|whole block|multiple households|many residents|many people|localized outage|power outage|electricity outage|traffic lights down|traffic lights not working|road blocked|road closure|major blockage|major leak|major pothole|large pothole|bridge damage|retaining wall/, points: 8 },
+    // ── HIGH: infrastructure failure or rapid escalation risk (+6) ──
+    { pattern: /spreading|getting worse|worsening|escalating|overflowing|overflow|raw sewage|sewage in street|sewage in yard|large water leak|main road|primary road|arterial road|busy road|school road|hospital road|clinic road|no access|blocked access|road impassable|sinkhole|collapsed road|collapsed pipe|burst sewer/, points: 6 },
+    // ── MEDIUM: service inconvenience, limited impact (+3) ──
+    { pattern: /pothole|broken streetlight|streetlight out|missed collection|missed refuse|refuse not collected|drainage problem|blocked drain|slow drain|damaged sidewalk|pavement crack|broken bench|park maintenance|graffiti|vandalism|illegal dumping|overgrown grass|overgrown trees|abandoned vehicle|stray animal|noise complaint|intermittent|occasional|sometimes fails/, points: 3 },
+    // ── LOW: cosmetic, informational, or single-person issues (+1) ──
+    { pattern: /request for information|service suggestion|improvement suggestion|minor litter|litter complaint|cosmetic damage|request for bin|request for sign|additional signage|request for notice/, points: 1 },
+    // ── LOW modifiers: explicitly minor language (−4) ──
+    { pattern: /small|minor|slight|little|tiny|hairline|surface crack|cosmetic|not urgent|low priority|no rush|when possible|eventually/, points: -4 },
   ];
 
   for (const rule of priorityRules) {
@@ -258,9 +298,9 @@ const aiClassify = (description) => {
 
   // Map score to priority level
   let priority;
-  if (priorityScore >= 10)      priority = "Critical";
-  else if (priorityScore >= 5)  priority = "High";
-  else if (priorityScore >= 1)  priority = "Medium";
+  if (priorityScore >= 12)      priority = "Critical";
+  else if (priorityScore >= 6)  priority = "High";
+  else if (priorityScore >= 3)  priority = "Medium";
   else                          priority = "Low";
 
   // ── Confidence: how many keyword patterns matched ─────────────────
@@ -287,6 +327,352 @@ const aiClassify = (description) => {
     priorityScore,
     reasons,
   };
+};
+
+/* ─── AI IMAGE VALIDATOR ────────────────────────────────────────── */
+const IMAGE_VALIDATION_PROMPT = `You are a municipal complaint image validator for a Smart City system in South Africa.
+
+Your job is to validate whether an uploaded image is appropriate evidence for a municipal infrastructure complaint.
+
+ACCEPT images showing:
+potholes, damaged roads, road cracks, water leaks, burst pipes, flooding, sewage leaks, damaged sidewalks, broken streetlights, damaged traffic lights, fallen power lines, electrical infrastructure damage, damaged bridges, illegal dumping, overflowing waste bins, damaged public infrastructure, fire incidents affecting infrastructure, storm damage affecting public property.
+
+REJECT images showing:
+selfies, portrait photographs, groups of people, pets or animals, food, clothing, vehicles unrelated to the complaint, screenshots, documents, PDFs, forms, letters, invoices, flowcharts, diagrams, maps, drawings, computer-generated illustrations, blank images, memes, social media screenshots.
+
+RULES:
+1. The image must be a real-world photograph.
+2. The image must show evidence of a municipal infrastructure or public service issue.
+3. If confidence is below 70%, mark as invalid and request another image.
+4. If the image contains only people with no visible infrastructure issue, reject.
+5. Screenshots, documents, and unrelated images must always be rejected.
+
+Respond ONLY with a JSON object — no markdown, no backticks, no explanation outside the JSON:
+{
+  "valid": true or false,
+  "detectedObjects": ["list", "of", "detected", "items"],
+  "confidence": number between 0 and 100,
+  "reason": "one sentence explanation",
+  "matchesComplaint": true or false,
+  "suggestion": "what to photograph instead if rejected, or empty string if accepted"
+}`;
+
+const validateImageWithAI = async (imageFile, category) => {
+
+  // ── Person / face / skin detector ─────────────────────────────
+  const detectFaceOrPerson = (pixelData, width, height) => {
+    let skinPixels = 0;
+    const totalPixels = pixelData.length / 4;
+
+    for (let i = 0; i < pixelData.length; i += 4) {
+      const r = pixelData[i];
+      const g = pixelData[i + 1];
+      const b = pixelData[i + 2];
+      const isSkinLight = (r > 170 && g > 120 && b > 90 && r > g && r > b && Math.abs(r-g) > 10 && r-b > 15);
+      const isSkinMedium = (r > 100 && g > 70 && b > 40 && r > g && g > b && r-b > 20 && r < 240);
+      const isSkinDark = (r > 50 && r < 170 && g > 35 && g < 140 && b > 15 && b < 110 && r > g && g > b && r-b > 15);
+      if (isSkinLight || isSkinMedium || isSkinDark) skinPixels++;
+    }
+
+    const skinRatio = skinPixels / totalPixels;
+    const aspectRatio = width / height;
+    const isPortrait = aspectRatio < 0.95;
+
+    // Check upper-center zone for face concentration
+    let upperSkin = 0, upperTotal = 0;
+    const sW = Math.min(width, 100), sH = Math.min(height, 100);
+    for (let y = 0; y < Math.floor(sH * 0.55); y++) {
+      for (let x = Math.floor(sW * 0.15); x < Math.floor(sW * 0.85); x++) {
+        const idx = (y * sW + x) * 4;
+        if (idx + 2 < pixelData.length) {
+          const r = pixelData[idx], g = pixelData[idx+1], b = pixelData[idx+2];
+          upperTotal++;
+          if (
+            (r>170&&g>120&&b>90&&r>g&&r>b&&r-b>15) ||
+            (r>100&&g>70&&b>40&&r>g&&g>b&&r-b>20&&r<240) ||
+            (r>50&&r<170&&g>35&&g<140&&b>15&&b<110&&r>g&&g>b&&r-b>15)
+          ) upperSkin++;
+        }
+      }
+    }
+    const upperSkinRatio = upperTotal > 0 ? upperSkin / upperTotal : 0;
+
+    return {
+      skinRatio,
+      upperSkinRatio,
+      isPortrait,
+      likelyPerson:
+        skinRatio > 0.22 ||
+        (skinRatio > 0.15 && isPortrait) ||
+        upperSkinRatio > 0.32,
+    };
+  };
+
+  // ── Vehicle / car detector ─────────────────────────────────────
+  const detectVehicle = (pixelData, width, height) => {
+    // Cars typically have large uniform metallic/grey/white/black regions
+    // with high horizontal symmetry and specific colour distributions
+    let metallicPixels = 0;
+    let darkBodyPixels = 0;
+    let totalPixels = pixelData.length / 4;
+
+    for (let i = 0; i < pixelData.length; i += 4) {
+      const r = pixelData[i];
+      const g = pixelData[i + 1];
+      const b = pixelData[i + 2];
+
+      // Metallic/silver/white car body
+      const isMetallic = (
+        Math.abs(r - g) < 20 &&
+        Math.abs(g - b) < 20 &&
+        Math.abs(r - b) < 20 &&
+        r > 140 && r < 240
+      );
+      // Dark car body (black/dark grey cars)
+      const isDarkBody = (
+        r < 80 && g < 80 && b < 80 &&
+        Math.abs(r - g) < 25 &&
+        Math.abs(g - b) < 25
+      );
+      if (isMetallic) metallicPixels++;
+      if (isDarkBody) darkBodyPixels++;
+    }
+
+    const metallicRatio = metallicPixels / totalPixels;
+    const darkBodyRatio = darkBodyPixels / totalPixels;
+    const aspectRatio = width / height;
+
+    // Cars are usually wider than tall (landscape) and have large
+    // uniform metallic or dark regions filling most of the frame
+    const isLandscape = aspectRatio > 1.1;
+    const dominatedByVehicleColors = (metallicRatio + darkBodyRatio) > 0.55;
+
+    // Check if the image is close-up of a vehicle
+    // (very high metallic/dark ratio with landscape orientation)
+    const likelyVehicle =
+      (isLandscape && metallicRatio > 0.45) ||
+      (isLandscape && darkBodyRatio > 0.40) ||
+      (dominatedByVehicleColors && isLandscape && (metallicRatio + darkBodyRatio) > 0.65);
+
+    return { metallicRatio, darkBodyRatio, likelyVehicle };
+  };
+
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const width = img.naturalWidth;
+        const height = img.naturalHeight;
+        const fileSize = imageFile.size;
+        const fileType = imageFile.type;
+        const fileName = imageFile.name.toLowerCase();
+
+        // ── REJECT: not an image ────────────────────────────────
+        if (!fileType.startsWith("image/")) {
+          return resolve({
+            valid: false,
+            detectedObjects: [],
+            confidence: 0,
+            reason: "File is not an image. Please upload a photo (JPG, PNG, WEBP).",
+            matchesComplaint: false,
+            suggestion: "Take a clear photo of the reported issue and upload it.",
+          });
+        }
+
+        // ── REJECT: file too small ──────────────────────────────
+        if (fileSize < 10 * 1024) {
+          return resolve({
+            valid: false,
+            detectedObjects: [],
+            confidence: 0,
+            reason: "Image is too small to be a real photo. Minimum size is 10KB.",
+            matchesComplaint: false,
+            suggestion: "Take a new photo directly with your camera.",
+          });
+        }
+
+        // ── REJECT: image dimensions too small ──────────────────
+        if (width < 100 || height < 100) {
+          return resolve({
+            valid: false,
+            detectedObjects: [],
+            confidence: 0,
+            reason: `Image resolution is too low (${width}x${height}px). Please take a clearer photo.`,
+            matchesComplaint: false,
+            suggestion: "Use your camera to take a proper photo of the issue.",
+          });
+        }
+
+        // ── REJECT: suspicious filenames ────────────────────────
+        const rejectedNames = [
+          "screenshot","screen shot","screen_shot",
+          "document","invoice","receipt","letter",
+          "form","pdf","diagram","map","chart",
+          "whatsapp","telegram","facebook","twitter",
+          "instagram","tiktok","meme","wallpaper",
+          "selfie","portrait","profile","headshot",
+          "face","person","people","human","img_selfie",
+        ];
+        const hasRejectedName = rejectedNames.some(n => fileName.includes(n));
+        if (hasRejectedName) {
+          return resolve({
+            valid: false,
+            detectedObjects: [],
+            confidence: 20,
+            reason: "This file name suggests it is a selfie, portrait or document — not a photo of a municipal issue.",
+            matchesComplaint: false,
+            suggestion: "Please take a real photo of the infrastructure issue you are reporting.",
+          });
+        }
+
+        // ── REJECT: perfect square small image (icon) ───────────
+        if (width === height && width <= 200) {
+          return resolve({
+            valid: false,
+            detectedObjects: [],
+            confidence: 15,
+            reason: "This looks like an icon or thumbnail, not a real photograph.",
+            matchesComplaint: false,
+            suggestion: "Take a photo of the actual issue using your phone camera.",
+          });
+        }
+
+        // ── Canvas pixel analysis ────────────────────────────────
+        const canvas = document.createElement("canvas");
+        const MAX_SAMPLE = 100;
+        canvas.width = Math.min(width, MAX_SAMPLE);
+        canvas.height = Math.min(height, MAX_SAMPLE);
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        let pixelData;
+        try {
+          pixelData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        } catch (_) {
+          return resolve({
+            valid: true,
+            detectedObjects: ["photo"],
+            confidence: 72,
+            reason: "Image accepted. Please ensure it clearly shows the reported issue.",
+            matchesComplaint: true,
+            suggestion: "",
+          });
+        }
+
+        // ── REJECT: person / face / selfie detection ─────────────
+        const faceCheck = detectFaceOrPerson(pixelData, canvas.width, canvas.height);
+        if (faceCheck.likelyPerson) {
+          return resolve({
+            valid: false,
+            detectedObjects: ["person detected", "skin tones detected"],
+            confidence: Math.round(faceCheck.skinRatio * 100),
+            reason: "This image appears to contain a person, face or selfie. Personal photos are not accepted as evidence for municipal complaints.",
+            matchesComplaint: false,
+            suggestion: "Please take a photo of the actual infrastructure issue (e.g. the pothole, burst pipe, broken streetlight) — not a person.",
+          });
+        }
+
+        // ── Calculate brightness ─────────────────────────────────
+        let totalBrightness = 0;
+        let darkPixels = 0;
+        const totalPixels = pixelData.length / 4;
+
+        for (let i = 0; i < pixelData.length; i += 4) {
+          const r = pixelData[i];
+          const g = pixelData[i + 1];
+          const b = pixelData[i + 2];
+          const brightness = (r + g + b) / 3;
+          totalBrightness += brightness;
+          if (brightness < 30) darkPixels++;
+        }
+
+        const avgBrightness = totalBrightness / totalPixels;
+        const darkRatio = darkPixels / totalPixels;
+
+        // ── REJECT: completely black ─────────────────────────────
+        if (avgBrightness < 15 || darkRatio > 0.95) {
+          return resolve({
+            valid: false,
+            detectedObjects: [],
+            confidence: 10,
+            reason: "Image appears to be completely black or too dark to see anything.",
+            matchesComplaint: false,
+            suggestion: "Take a photo in good lighting so the issue is clearly visible.",
+          });
+        }
+
+        // ── REJECT: completely white / blank ─────────────────────
+        let brightPixels = 0;
+        for (let i = 0; i < pixelData.length; i += 4) {
+          const r = pixelData[i];
+          const g = pixelData[i + 1];
+          const b = pixelData[i + 2];
+          if (r > 240 && g > 240 && b > 240) brightPixels++;
+        }
+        const brightRatio = brightPixels / totalPixels;
+        if (brightRatio > 0.92) {
+          return resolve({
+            valid: false,
+            detectedObjects: [],
+            confidence: 10,
+            reason: "Image appears to be blank or completely white.",
+            matchesComplaint: false,
+            suggestion: "Take a clear photo of the municipal issue you are reporting.",
+          });
+        }
+
+        // ── ACCEPT: confidence scoring ───────────────────────────
+        let confidence = 70;
+        if (width >= 800 && height >= 600) confidence += 10;
+        else if (width >= 400 && height >= 300) confidence += 5;
+        if (fileSize > 500 * 1024) confidence += 10;
+        else if (fileSize > 100 * 1024) confidence += 5;
+        if (avgBrightness > 60 && avgBrightness < 200) confidence += 5;
+        confidence = Math.min(confidence, 95);
+
+        const categoryObjects = {
+          water:       ["water", "pipe", "pavement"],
+          electricity: ["electrical infrastructure", "streetlight", "wiring"],
+          pothole:     ["road surface", "pavement", "ground"],
+          sewage:      ["drain", "pipe", "ground"],
+          facility:    ["public area", "structure", "ground"],
+        };
+        const detectedObjects = categoryObjects[category] || ["outdoor scene", "ground"];
+
+        return resolve({
+          valid: true,
+          detectedObjects,
+          confidence,
+          reason: `Image accepted (${Math.round(fileSize/1024)}KB, ${width}x${height}px). Ensure the ${category} issue is clearly visible.`,
+          matchesComplaint: true,
+          suggestion: "",
+        });
+      };
+
+      img.onerror = () => resolve({
+        valid: false,
+        detectedObjects: [],
+        confidence: 0,
+        reason: "Could not read image. The file may be corrupted.",
+        matchesComplaint: false,
+        suggestion: "Try uploading a different photo.",
+      });
+
+      img.src = e.target.result;
+    };
+
+    reader.onerror = () => resolve({
+      valid: false,
+      detectedObjects: [],
+      confidence: 0,
+      reason: "Could not read the file.",
+      matchesComplaint: false,
+      suggestion: "Please try uploading the image again.",
+    });
+
+    reader.readAsDataURL(imageFile);
+  });
 };
 
 /* ─── SHARED COMPONENTS ─────────────────────────────────────────── */
@@ -626,128 +1012,271 @@ function LiveTrackingMap({ complaints=[], technicians=[], selected, onSelect, he
   );
 }
 
-/* ─── LANDING PAGE (Concept 5: Stats + Testimonials) ───────────────── */
-function LandingPage({ onGetStarted, onSignIn }) {
-  const [stats, setStats] = useState({ citizens: 0, technicians: 0, resolved: 0 });
-  const [countersStarted, setCountersStarted] = useState(false);
+
+
+/* ─── LANDING PAGE ──────────────────────────────────────────────── */
+function LandingPage({ onGoLogin, onGoRegister }) {
+  const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
-    setCountersStarted(true);
-    const duration = 2000;
-    const stepTime = 20;
-    const target = { citizens: 18423, technicians: 47, resolved: 12589 };
-    const steps = duration / stepTime;
-    let step = 0;
-    const interval = setInterval(() => {
-      step++;
-      const progress = Math.min(1, step / steps);
-      setStats({
-        citizens: Math.floor(target.citizens * progress),
-        technicians: Math.floor(target.technicians * progress),
-        resolved: Math.floor(target.resolved * progress),
-      });
-      if (step >= steps) clearInterval(interval);
-    }, stepTime);
-    return () => clearInterval(interval);
+    const onScroll = () => setScrolled(window.scrollY > 40);
+    window.addEventListener("scroll", onScroll);
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  const testimonials = [
-    { name: "Thabo M.", role: "Citizen, Ward 4", text: "Reported a burst pipe at 7am, by 11am a technician was fixing it. The live tracking gave me peace of mind.", avatar: "👨" },
-    { name: "Nomsa D.", role: "Small Business Owner", text: "Potholes outside my shop were filled within 2 days after I reported via the app. My customers are happier now.", avatar: "👩" },
-    { name: "Councillor P. Molefe", role: "Ward 8 Councillor", text: "The council escalation queue has transformed how we prioritise urgent issues. Citizens feel heard.", avatar: "⚖️" },
+  const features = [
+    { icon:"💬", title:"Citizens", color:"#1D4ED8", bg:"#EFF6FF", border:"#BFDBFE",
+      desc:"Report issues, track progress and get your city services resolved fast.", link:"Learn more →" },
+    { icon:"🔧", title:"Technicians", color:"#059669", bg:"#ECFDF5", border:"#A7F3D0",
+      desc:"View assigned tasks, update status and resolve complaints efficiently.", link:"Learn more →" },
+    { icon:"🛡️", title:"Councillors", color:"#1D4ED8", bg:"#EFF6FF", border:"#BFDBFE",
+      desc:"Oversee escalated issues and ensure transparency and accountability.", link:"Learn more →" },
   ];
 
-  const howItWorks = [
-    { icon: "📝", title: "Describe the issue", text: "Tell us what, where, and upload a photo (optional)" },
-    { icon: "📍", title: "Pin location", text: "Auto‑detect GPS or search an address – we’ll verify" },
-    { icon: "🤖", title: "AI classification", text: "Our AI categorises and sets priority instantly" },
-    { icon: "👷", title: "Assigned & resolved", text: "Technician receives the job, you get live updates" },
+  const stats = [
+    { value:"2,400+", label:"Complaints Resolved" },
+    { value:"98%",    label:"Satisfaction Rate" },
+    { value:"< 48h",  label:"Average Response Time" },
+    { value:"5",      label:"Service Categories" },
   ];
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--sc-bg)", fontFamily: "var(--sc-font)", color: "var(--sc-text)" }}>
-      <div style={{ background: "linear-gradient(135deg, #0A0F1E 0%, #111827 100%)", padding: "80px 24px 60px", textAlign: "center", borderBottom: "1px solid var(--sc-border)" }}>
-        <div style={{ maxWidth: 800, margin: "0 auto" }}>
-          <div style={{ fontSize: 56, marginBottom: 16 }}>🏙️</div>
-          <h1 style={{ fontSize: 42, fontWeight: 800, letterSpacing: "-1px", marginBottom: 16, fontFamily: "var(--sc-font-display)", background: "linear-gradient(135deg, #fff, #38BDF8)", WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
-            Smart Reporting System
+    <div style={{ fontFamily:"var(--sc-font)", minHeight:"100vh", background:"var(--sc-bg)", color:"var(--sc-text)" }}>
+
+      {/* ── NAVBAR ── */}
+      <nav style={{
+        position:"fixed", top:0, left:0, right:0, zIndex:1000,
+        background: "rgba(255,255,255,0.97)",
+        backdropFilter: "blur(16px)",
+        borderBottom: "1px solid #E2E8F0",
+        transition:"all 0.3s",
+        padding:"0 40px", height:64,
+        display:"flex", alignItems:"center", justifyContent:"space-between",
+      }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,#0EA5E9,#6366F1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>🏙️</div>
+          <div>
+            <div style={{ fontWeight:800, fontSize:16, color:"#1E3A5F", fontFamily:"var(--sc-font-display)", letterSpacing:"-0.3px" }}>SmartCity</div>
+          <div style={{ fontSize:9, color:"#64748B", letterSpacing:"1px", textTransform:"uppercase" }}>Emalahleni · Ward 8</div>
+          </div>
+        </div>
+
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <a href="#features" onClick={e=>{e.preventDefault();document.getElementById("features")?.scrollIntoView({behavior:"smooth"})}}
+            style={{ color:"#334155", fontSize:14, fontWeight:600, textDecoration:"none", padding:"6px 14px", borderRadius:8, transition:"all .2s" }}
+            onMouseEnter={e=>e.target.style.color="#1D4ED8"}
+            onMouseLeave={e=>e.target.style.color="#334155"}>
+            Features
+          </a>
+          <a href="#about" onClick={e=>{e.preventDefault();document.getElementById("about")?.scrollIntoView({behavior:"smooth"})}}
+            style={{ color:"#334155", fontSize:14, fontWeight:600, textDecoration:"none", padding:"6px 14px", borderRadius:8, transition:"all .2s" }}
+            onMouseEnter={e=>e.target.style.color="#1D4ED8"}
+            onMouseLeave={e=>e.target.style.color="#334155"}>
+            About
+          </a>
+          <button onClick={onGoLogin}
+            style={{ background:"linear-gradient(135deg,#0EA5E9,#6366F1)", color:"#fff", border:"none", padding:"9px 22px", borderRadius:10, fontSize:14, fontWeight:700, cursor:"pointer" }}>
+            Login / Sign Up
+          </button>
+        </div>
+      </nav>
+
+      {/* ── HERO ── */}
+      <div style={{
+        position:"relative", minHeight:"100vh",
+        display:"flex", alignItems:"center", justifyContent:"center",
+        overflow:"hidden",
+      }}>
+        {/* Background image — Emalahleni aerial */}
+        <div style={{
+          position:"absolute", inset:0,
+          background:"linear-gradient(145deg, #0B1F3A 0%, #1A3558 60%, #1E3A5F 100%)",
+        }}/>
+
+        {/* Gradient overlay */}
+        <div style={{
+          position:"absolute", inset:0,
+          background:"linear-gradient(180deg, rgba(10,20,50,0.18) 0%, rgba(10,20,50,0.45) 55%, rgba(10,20,50,0.82) 100%)",
+        }}/>
+
+        {/* Grid pattern */}
+        <div style={{
+          position:"absolute", inset:0,
+          backgroundImage:"linear-gradient(rgba(56,189,248,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(56,189,248,0.04) 1px,transparent 1px)",
+          backgroundSize:"50px 50px",
+        }}/>
+
+        {/* Hero content */}
+        <div style={{ position:"relative", zIndex:1, textAlign:"left", padding:"0 40px", maxWidth:900, width:"100%", alignSelf:"flex-start", marginTop:120 }}>
+          {/* Live badge */}
+          <div style={{
+            display:"inline-flex", alignItems:"center", gap:8,
+            background:"rgba(52,211,153,0.1)", border:"1px solid rgba(52,211,153,0.3)",
+            borderRadius:20, padding:"6px 16px", marginBottom:28,
+          }}>
+            <span style={{ width:7, height:7, borderRadius:"50%", background:"#34D399", display:"inline-block", animation:"scPulse 2s infinite" }}/>
+            <span style={{ fontSize:12, fontWeight:700, color:"#34D399", letterSpacing:"0.5px" }}>LIVE SYSTEM · EMALAHLENI WARD 8</span>
+          </div>
+
+          <h1 style={{
+            margin:"0 0 20px", fontSize:"clamp(36px,6vw,68px)", fontWeight:800,
+            fontFamily:"var(--sc-font-display)", letterSpacing:"-1px", lineHeight:1.1,
+            color:"#fff",
+          }}>
+            Report.{" "}
+            <span style={{ background:"linear-gradient(135deg,#38BDF8,#818CF8)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>
+              Track.
+            </span>
+            {" "}Resolve.
           </h1>
-          <p style={{ fontSize: 18, color: "var(--sc-text2)", marginBottom: 32, maxWidth: 600, margin: "0 auto 32px" }}>
-            Report municipal issues, track progress in real‑time, and see your community get results – faster.
+
+          <p style={{ fontSize:"clamp(15px,2vw,19px)", color:"rgba(255,255,255,0.88)", lineHeight:1.7, margin:"0 0 36px", maxWidth:560 }}>
+            A smarter way to report municipal issues and build a better Emalahleni together. Powered by AI classification and real-time tracking.
           </p>
-          <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
-            <button onClick={onGetStarted} className="sc-btn-primary" style={{ padding: "12px 28px", fontSize: 16, background: "linear-gradient(135deg, #38BDF8, #6366F1)", border: "none", borderRadius: 40, color: "#fff", fontWeight: 700, cursor: "pointer" }}>
-              Get Started →
+
+          <div style={{ display:"flex", gap:14, justifyContent:"flex-start", flexWrap:"wrap" }}>
+            <button onClick={onGoRegister}
+              style={{ background:"linear-gradient(135deg,#0EA5E9,#6366F1)", color:"#fff", border:"none", padding:"14px 32px", borderRadius:12, fontSize:16, fontWeight:700, cursor:"pointer", boxShadow:"0 8px 30px rgba(14,165,233,0.35)", transition:"all .2s" }}
+              onMouseEnter={e=>{e.target.style.transform="translateY(-2px)";e.target.style.boxShadow="0 12px 40px rgba(14,165,233,0.5)"}}
+              onMouseLeave={e=>{e.target.style.transform="translateY(0)";e.target.style.boxShadow="0 8px 30px rgba(14,165,233,0.35)"}}>
+              Submit a Complaint →
             </button>
-            <button onClick={onSignIn} style={{ padding: "12px 28px", fontSize: 16, background: "transparent", border: "1.5px solid var(--sc-border)", borderRadius: 40, color: "var(--sc-text)", fontWeight: 600, cursor: "pointer" }}>
+            <button onClick={onGoLogin}
+              style={{ background:"rgba(255,255,255,0.08)", color:"#fff", border:"1.5px solid rgba(255,255,255,0.25)", padding:"14px 32px", borderRadius:12, fontSize:16, fontWeight:600, cursor:"pointer", backdropFilter:"blur(8px)", transition:"all .2s" }}
+              onMouseEnter={e=>{e.target.style.background="rgba(255,255,255,0.14)"}}
+              onMouseLeave={e=>{e.target.style.background="rgba(255,255,255,0.08)"}}>
               Sign In
             </button>
           </div>
         </div>
-      </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 24, maxWidth: 1000, margin: "0 auto", padding: "48px 24px" }}>
-        <div style={{ background: "var(--sc-surface)", borderRadius: 20, padding: 24, textAlign: "center", border: "1px solid var(--sc-border)", boxShadow: "var(--sc-card-shadow)" }}>
-          <div style={{ fontSize: 36, marginBottom: 8 }}>👥</div>
-          <div style={{ fontSize: 32, fontWeight: 800, color: "#38BDF8" }}>{countersStarted ? stats.citizens.toLocaleString() : "0"}</div>
-          <div style={{ fontSize: 13, color: "var(--sc-text2)", fontWeight: 600, marginTop: 6 }}>Active Citizens</div>
-        </div>
-        <div style={{ background: "var(--sc-surface)", borderRadius: 20, padding: 24, textAlign: "center", border: "1px solid var(--sc-border)", boxShadow: "var(--sc-card-shadow)" }}>
-          <div style={{ fontSize: 36, marginBottom: 8 }}>👷</div>
-          <div style={{ fontSize: 32, fontWeight: 800, color: "#34D399" }}>{countersStarted ? stats.technicians : "0"}</div>
-          <div style={{ fontSize: 13, color: "var(--sc-text2)", fontWeight: 600, marginTop: 6 }}>Technicians on Ground</div>
-        </div>
-        <div style={{ background: "var(--sc-surface)", borderRadius: 20, padding: 24, textAlign: "center", border: "1px solid var(--sc-border)", boxShadow: "var(--sc-card-shadow)" }}>
-          <div style={{ fontSize: 36, marginBottom: 8 }}>✅</div>
-          <div style={{ fontSize: 32, fontWeight: 800, color: "#FBBF24" }}>{countersStarted ? stats.resolved.toLocaleString() : "0"}</div>
-          <div style={{ fontSize: 13, color: "var(--sc-text2)", fontWeight: 600, marginTop: 6 }}>Complaints Resolved</div>
+        {/* Scroll indicator */}
+        <div style={{ position:"absolute", bottom:32, left:"50%", transform:"translateX(-50%)", display:"flex", flexDirection:"column", alignItems:"center", gap:6, opacity:0.5 }}>
+          <span style={{ fontSize:11, color:"#fff", letterSpacing:"1px", textTransform:"uppercase" }}>Scroll</span>
+          <div style={{ width:1, height:40, background:"linear-gradient(180deg,#fff,transparent)" }}/>
         </div>
       </div>
 
-      <div style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 24px 48px" }}>
-        <h2 style={{ textAlign: "center", fontSize: 28, fontWeight: 700, marginBottom: 40 }}>How it works</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 24 }}>
-          {howItWorks.map((step, idx) => (
-            <div key={idx} style={{ background: "var(--sc-surface)", borderRadius: 16, padding: 20, textAlign: "center", border: "1px solid var(--sc-border)" }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>{step.icon}</div>
-              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>{step.title}</div>
-              <div style={{ fontSize: 13, color: "var(--sc-text2)" }}>{step.text}</div>
+      {/* ── STATS BAR ── */}
+      <div style={{ background:"#F8FAFF", borderTop:"1px solid #E2E8F0", borderBottom:"1px solid #E2E8F0", padding:"28px 40px" }}>
+        <div style={{ maxWidth:900, margin:"0 auto", display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:24 }}>
+          {stats.map(s=>(
+            <div key={s.label} style={{ textAlign:"center" }}>
+              <div style={{ fontSize:32, fontWeight:800, color:"#1D4ED8", fontFamily:"var(--sc-font-display)" }}>{s.value}</div>
+              <div style={{ fontSize:12, color:"var(--sc-text2)", marginTop:4, fontWeight:500, textTransform:"uppercase", letterSpacing:"0.5px" }}>{s.label}</div>
             </div>
           ))}
         </div>
       </div>
 
-      <div style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 24px 60px" }}>
-        <h2 style={{ textAlign: "center", fontSize: 28, fontWeight: 700, marginBottom: 40 }}>What our residents say</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 24 }}>
-          {testimonials.map((t, i) => (
-            <div key={i} style={{ background: "var(--sc-surface)", borderRadius: 20, padding: 24, border: "1px solid var(--sc-border)", boxShadow: "var(--sc-card-shadow)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-                <div style={{ width: 48, height: 48, borderRadius: "50%", background: "rgba(56,189,248,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>{t.avatar}</div>
-                <div>
-                  <div style={{ fontWeight: 700 }}>{t.name}</div>
-                  <div style={{ fontSize: 11, color: "var(--sc-text3)" }}>{t.role}</div>
-                </div>
+      {/* ── FEATURES ── */}
+      <div id="features" style={{ padding:"60px 40px", maxWidth:1100, margin:"0 auto", background:"#fff" }}>
+        <div style={{ textAlign:"center", marginBottom:52 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:"#38BDF8", letterSpacing:"2px", textTransform:"uppercase", marginBottom:12 }}>HOW IT WORKS</div>
+          <h2 style={{ margin:0, fontSize:"clamp(26px,4vw,42px)", fontWeight:800, fontFamily:"var(--sc-font-display)", color:"var(--sc-text)" }}>
+            Built for every role in the municipality
+          </h2>
+          <p style={{ margin:"14px auto 0", maxWidth:500, color:"var(--sc-text2)", fontSize:15, lineHeight:1.7 }}>
+            Whether you are a citizen, field worker or council member — SmartCity gives you the right tools.
+          </p>
+        </div>
+
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))", gap:22 }}>
+          {features.map(f=>(
+            <div key={f.title}
+              style={{ background:"#FFFFFF", borderRadius:16, padding:"28px 24px", border:`1.5px solid ${f.border}`, transition:"all .25s", cursor:"pointer", position:"relative", overflow:"hidden", boxShadow:"0 2px 12px rgba(0,0,0,0.06)" }}
+              onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-4px)";e.currentTarget.style.boxShadow=`0 12px 40px ${f.bg}`}}
+              onMouseLeave={e=>{e.currentTarget.style.transform="translateY(0)";e.currentTarget.style.boxShadow="none"}}>
+              <div style={{ position:"absolute", top:0, right:0, width:100, height:100, background:`radial-gradient(circle at top right, ${f.bg}, transparent)`, pointerEvents:"none" }}/>
+              <div style={{ width:56, height:56, borderRadius:16, background:f.bg, border:`1px solid ${f.border}`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:28, marginBottom:20 }}>
+                {f.icon}
               </div>
-              <p style={{ fontStyle: "italic", color: "var(--sc-text2)", lineHeight: 1.5 }}>“{t.text}”</p>
+              <h3 style={{ margin:"0 0 10px", fontSize:20, fontWeight:800, color:f.color, fontFamily:"var(--sc-font-display)" }}>{f.title}</h3>
+              <p style={{ margin:"0 0 20px", fontSize:14, color:"var(--sc-text2)", lineHeight:1.65 }}>{f.desc}</p>
+              <button onClick={onGoLogin} style={{ background:"none", border:"none", color:f.color, fontSize:13, fontWeight:700, cursor:"pointer", padding:0, display:"flex", alignItems:"center", gap:6, textDecoration:"underline", textUnderlineOffset:3 }}>
+                {f.link} <span style={{ fontSize:16 }}>→</span>
+              </button>
             </div>
           ))}
         </div>
       </div>
 
-      <div style={{ textAlign: "center", padding: "40px 24px 60px", borderTop: "1px solid var(--sc-border)" }}>
-        <div style={{ fontSize: 20, fontWeight: 600, marginBottom: 16 }}>Ready to make a difference?</div>
-        <button onClick={onGetStarted} className="sc-btn-primary" style={{ padding: "12px 32px", fontSize: 16, background: "linear-gradient(135deg, #38BDF8, #6366F1)", border: "none", borderRadius: 40, color: "#fff", fontWeight: 700, cursor: "pointer" }}>
-          Report an issue now
-        </button>
-        <div style={{ marginTop: 24, fontSize: 12, color: "var(--sc-text3)" }}>© Emalahleni Local Municipality – Smart City Platform</div>
+      {/* ── ABOUT ── */}
+      <div id="about" style={{ background:"var(--sc-surface)", borderTop:"1px solid var(--sc-border)", borderBottom:"1px solid var(--sc-border)", padding:"80px 40px" }}>
+        <div style={{ maxWidth:900, margin:"0 auto", display:"grid", gridTemplateColumns:"1fr 1fr", gap:60, alignItems:"center" }}>
+          <div>
+            <div style={{ fontSize:11, fontWeight:700, color:"#818CF8", letterSpacing:"2px", textTransform:"uppercase", marginBottom:12 }}>ABOUT THE PLATFORM</div>
+            <h2 style={{ margin:"0 0 16px", fontSize:"clamp(22px,3vw,36px)", fontWeight:800, fontFamily:"var(--sc-font-display)", color:"var(--sc-text)", lineHeight:1.2 }}>
+              Emalahleni's Smart Municipal Reporting System
+            </h2>
+            <p style={{ color:"var(--sc-text2)", fontSize:14, lineHeight:1.8, margin:"0 0 14px" }}>
+              SmartCity is a digital platform that connects citizens directly with the Emalahleni Local Municipality. Report infrastructure issues, track resolution progress in real time, and hold the municipality accountable.
+            </p>
+            <p style={{ color:"var(--sc-text2)", fontSize:14, lineHeight:1.8, margin:"0 0 24px" }}>
+              Every complaint is automatically classified by AI, assigned to the right technician, and escalated to the Councillor when urgent. Ward 8 residents deserve faster, smarter service delivery.
+            </p>
+            <button onClick={onGoRegister}
+              style={{ background:"linear-gradient(135deg,#0EA5E9,#6366F1)", color:"#fff", border:"none", padding:"12px 28px", borderRadius:10, fontSize:14, fontWeight:700, cursor:"pointer" }}>
+              Get Started Free →
+            </button>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
+            {[
+              { icon:"🤖", label:"AI Auto-Classification", color:"#38BDF8" },
+              { icon:"🗺️", label:"Real-Time Map Tracking", color:"#34D399" },
+              { icon:"📢", label:"Municipal Broadcasts", color:"#FBBF24" },
+              { icon:"📊", label:"Reports & Analytics", color:"#818CF8" },
+              { icon:"⚖️", label:"Council Escalations", color:"#F87171" },
+              { icon:"⭐", label:"Citizen Ratings", color:"#34D399" },
+            ].map(item=>(
+              <div key={item.label} style={{ background:"var(--sc-surface2)", borderRadius:14, padding:"16px 14px", border:"1px solid var(--sc-border)", display:"flex", alignItems:"center", gap:10 }}>
+                <span style={{ fontSize:22 }}>{item.icon}</span>
+                <span style={{ fontSize:12, fontWeight:600, color:item.color, lineHeight:1.3 }}>{item.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
+
+      {/* ── FOOTER ── */}
+      <footer style={{ background:"var(--sc-navy,#060D1F)", padding:"40px 40px 28px", borderTop:"1px solid rgba(99,130,180,0.15)" }}>
+        <div style={{ maxWidth:1100, margin:"0 auto" }}>
+          <div style={{ display:"grid", gridTemplateColumns:"2fr 1fr 1fr", gap:40, marginBottom:36 }}>
+            <div>
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
+                <div style={{ width:34, height:34, borderRadius:9, background:"linear-gradient(135deg,#0EA5E9,#6366F1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>🏙️</div>
+                <span style={{ fontWeight:800, fontSize:16, color:"#fff", fontFamily:"var(--sc-font-display)" }}>SmartCity</span>
+              </div>
+              <p style={{ color:"rgba(255,255,255,0.45)", fontSize:13, lineHeight:1.7, maxWidth:280, margin:0 }}>
+                Emalahleni Local Municipality Smart Reporting System · Ward 8
+              </p>
+            </div>
+            <div>
+              <div style={{ fontWeight:700, color:"rgba(255,255,255,0.6)", fontSize:11, textTransform:"uppercase", letterSpacing:"1px", marginBottom:14 }}>Contact Us</div>
+              <div style={{ color:"rgba(255,255,255,0.45)", fontSize:13, lineHeight:2 }}>
+                <div>📞 +27 13 690 6911</div>
+                <div>✉️ support@emalahleni.gov.za</div>
+                <div>📍 Witbank, Mpumalanga</div>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontWeight:700, color:"rgba(255,255,255,0.6)", fontSize:11, textTransform:"uppercase", letterSpacing:"1px", marginBottom:14 }}>Follow Us</div>
+              <div style={{ display:"flex", gap:10 }}>
+                {["f","t","in"].map(s=>(
+                  <div key={s} style={{ width:36, height:36, borderRadius:8, background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.12)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:700, color:"rgba(255,255,255,0.6)", cursor:"pointer" }}>{s}</div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{ borderTop:"1px solid rgba(99,130,180,0.15)", paddingTop:20, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10 }}>
+            <span style={{ color:"rgba(255,255,255,0.3)", fontSize:12 }}>© 2025 Emalahleni Local Municipality. All rights reserved.</span>
+            <span style={{ color:"rgba(255,255,255,0.3)", fontSize:12 }}>Powered by SmartCity Platform</span>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
-
-/* ─── LOGIN PAGE ────────────────────────────────────────────────── */
-
 
 /* ─── LOGIN PAGE ────────────────────────────────────────────────── */
 const ROLES = [
@@ -757,7 +1286,7 @@ const ROLES = [
   { role:"Councillor",   icon:"⚖️", color:"#F87171", bg:"rgba(248,113,113,0.1)" },
 ];
 
-function LoginPage({ onLogin, onGoRegister, onForgotPassword }) {
+function LoginPage({ onLogin, onGoRegister, onForgotPassword, onGoHome }) {
   const [email,setEmail]=useState("");
   const [password,setPassword]=useState("");
   const [showPw,setShowPw]=useState(false);
@@ -817,6 +1346,14 @@ function LoginPage({ onLogin, onGoRegister, onForgotPassword }) {
       </div>
 
       <div style={{ width:"100%", maxWidth:460, position:"relative", zIndex:1 }}>
+        {/* Home button */}
+        <div style={{ marginBottom:16 }}>
+          <button onClick={onGoHome} style={{ background:"rgba(255,255,255,0.08)", border:"1.5px solid rgba(255,255,255,0.2)", color:"#fff", padding:"8px 18px", borderRadius:10, fontSize:13, fontWeight:600, cursor:"pointer", display:"inline-flex", alignItems:"center", gap:7, backdropFilter:"blur(8px)", transition:"all .2s" }}
+            onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.15)"}
+            onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,0.08)"}>
+            ← Home
+          </button>
+        </div>
         {/* Header */}
         <div style={{ textAlign:"center", marginBottom:32 }}>
           <div style={{ width:72, height:72, borderRadius:22, background:"linear-gradient(135deg, rgba(56,189,248,0.2), rgba(129,140,248,0.2))", border:"1px solid rgba(56,189,248,0.3)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:34, margin:"0 auto 18px", boxShadow:"0 0 30px rgba(56,189,248,0.15)" }}>🏙️</div>
@@ -1058,7 +1595,7 @@ function RegField({label,k,type,placeholder,value,onChange,error,hint}){
   );
 }
 
-function RegisterPage({ onBack, onRegistered }) {
+function RegisterPage({ onBack, onRegistered, onGoHome }) {
   const [form,setForm]=useState({name:"",id:"",email:"",password:"",confirm:"",role:"Citizen"});
   const [loading,setLoading]=useState(false);
   const [done,setDone]=useState(false);
@@ -1127,6 +1664,20 @@ function RegisterPage({ onBack, onRegistered }) {
   return(
     <div style={{minHeight:"100vh",background:"var(--sc-bg)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,fontFamily:"var(--sc-font)"}}>
       <div style={{width:"100%",maxWidth:480}}>
+        <div style={{ marginBottom:16 }}>
+          <button onClick={onGoHome} style={{ background:"rgba(255,255,255,0.08)", border:"1.5px solid rgba(255,255,255,0.2)", color:"#fff", padding:"8px 18px", borderRadius:10, fontSize:13, fontWeight:600, cursor:"pointer", display:"inline-flex", alignItems:"center", gap:7, backdropFilter:"blur(8px)", transition:"all .2s" }}
+            onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.15)"}
+            onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,0.08)"}>
+            ← Home
+          </button>
+        </div>
+        <div style={{ marginBottom:16 }}>
+          <button onClick={onGoHome} style={{ background:"rgba(255,255,255,0.08)", border:"1.5px solid rgba(255,255,255,0.2)", color:"#fff", padding:"8px 18px", borderRadius:10, fontSize:13, fontWeight:600, cursor:"pointer", display:"inline-flex", alignItems:"center", gap:7, backdropFilter:"blur(8px)", transition:"all .2s" }}
+            onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.15)"}
+            onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,0.08)"}>
+            ← Home
+          </button>
+        </div>
         <div style={{textAlign:"center",marginBottom:28}}>
           <div style={{fontSize:34,marginBottom:8}}>📊</div>
           <h1 style={{margin:0,color:"var(--sc-surface)",fontSize:22,fontWeight:800}}>Smart Reporting System</h1>
@@ -1521,6 +2072,32 @@ function CitizenPortal({ user, onLogout }) {
               </div>
             )}
             <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:18,marginBottom:22 }}>
+              {showForm&&(
+                <div style={{ background:"var(--sc-surface)",borderRadius:16,padding:22,border:"1px solid var(--sc-border)",marginBottom:18 }}>
+                  <div style={{ fontSize:11,fontWeight:700,color:"var(--sc-text3)",textTransform:"uppercase",letterSpacing:"1px",marginBottom:14 }}>🤖 AI Classifier Preview</div>
+                  {complaints.slice(0,3).map(c=>{
+                    const ai=aiClassify(c.description||"");
+                    const cat_=CATEGORIES.find(k=>k.id===ai.category);
+                    const cat__=CATEGORIES.find(k=>k.id===c.category);
+                    const match=ai.category===c.category;
+                    return(
+                      <div key={c.id} style={{padding:"10px 12px",borderRadius:10,background:"var(--sc-surface2)",border:`1px solid ${match?"rgba(52,211,153,0.3)":"rgba(251,191,36,0.3)"}`,marginBottom:8}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                          <span style={{fontSize:14}}>{cat__?.icon}</span>
+                          <span style={{fontSize:12,fontWeight:700,color:"var(--sc-text)"}}>{c.id}</span>
+                          <span style={{marginLeft:"auto",fontSize:10,fontWeight:700,color:match?"#34D399":"#FBBF24"}}>{match?"✓ Matched":"⚠ Mismatch"}</span>
+                        </div>
+                        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                          <span style={{fontSize:10,padding:"2px 8px",borderRadius:20,background:cat_?.bg,color:cat_?.color,fontWeight:600}}>{cat_?.icon} {cat_?.label}</span>
+                          <span style={{fontSize:10,padding:"2px 8px",borderRadius:20,background:PRIORITIES[ai.priority]?.bg,color:PRIORITIES[ai.priority]?.color,fontWeight:600}}>{ai.priority}</span>
+                          <span style={{fontSize:10,color:"var(--sc-text3)"}}>{Math.round(ai.confidence*100)}%</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {complaints.length===0&&<div style={{fontSize:12,color:"var(--sc-text3)",textAlign:"center",padding:"16px 0"}}>Submit a complaint to see AI classification</div>}
+                </div>
+              )}
               <div style={{ background:"var(--sc-surface)",borderRadius:16,padding:22,border:"1px solid var(--sc-border)" }}>
                 <h3 style={{ margin:"0 0 16px",fontSize:11,color:"var(--sc-text3)",fontWeight:700,letterSpacing:"1px",textTransform:"uppercase" }}>Quick Actions</h3>
                 {[["➕ Report New Issue",()=>setShowForm(true),"#38BDF8"],["📋 View My Complaints",()=>setView("complaints"),"#34D399"],["🗺️ Open Map View",()=>setView("map"),"#818CF8"]].map(([label,action,color])=>(
@@ -1691,9 +2268,12 @@ function CitizenSubmitForm({ onSubmit, onClose, existingComplaints=[] }) {
   const [submitting,setSubmitting]=useState(false);
   const [done,setDone]=useState(false);
   const [readabilityErr,setReadabilityErr]=useState("");
+  const [categoryMismatchErr,setCategoryMismatchErr]=useState("");
   const [aiPreview,setAiPreview]=useState(null);
   const [duplicates,setDuplicates]=useState([]);
   const [showDuplicateWarning,setShowDuplicateWarning]=useState(false);
+  const [imageValidation,setImageValidation]=useState(null); // null | "checking" | {valid,confidence,reason,...}
+  const [imageValidationErr,setImageValidationErr]=useState("");
   const [locationMode,setLocationMode]=useState("gps");
   const [searchQuery,setSearchQuery]=useState("");
   const [searchResults,setSearchResults]=useState([]);
@@ -1755,6 +2335,7 @@ function CitizenSubmitForm({ onSubmit, onClose, existingComplaints=[] }) {
             onChange={e=>{
               setDesc(e.target.value);
               setReadabilityErr("");
+              setCategoryMismatchErr("");
               setAiPreview(null);
               setDuplicates([]);
             }}
@@ -1775,8 +2356,22 @@ function CitizenSubmitForm({ onSubmit, onClose, existingComplaints=[] }) {
             <div style={{fontSize:11,color:"var(--sc-text2)"}}>{desc.length} chars</div>
           </div>
 
+          {/* Category mismatch error */}
+          {categoryMismatchErr&&(
+            <div style={{padding:"10px 14px",background:"rgba(248,113,113,0.1)",borderRadius:10,border:"1px solid rgba(248,113,113,0.3)",marginBottom:12,fontSize:13,color:"#F87171",display:"flex",alignItems:"flex-start",gap:8}}>
+              <span style={{fontSize:16,flexShrink:0}}>⚠️</span>
+              <div>
+                <div style={{fontWeight:700,marginBottom:3}}>Description doesn't match selected category</div>
+                <div style={{lineHeight:1.5}}>{categoryMismatchErr}</div>
+                <button onClick={()=>{setDesc("");setCategoryMismatchErr("");setAiPreview(null);setDuplicates("");}} style={{marginTop:8,fontSize:12,color:"#F87171",background:"rgba(248,113,113,0.15)",border:"1px solid rgba(248,113,113,0.4)",padding:"5px 12px",borderRadius:7,cursor:"pointer",fontWeight:700}}>
+                  ✏️ Re-enter Description
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* AI live preview — shows once 20+ chars typed */}
-          {desc.length>=20&&!readabilityErr&&(()=>{
+          {desc.length>=20&&!readabilityErr&&!categoryMismatchErr&&(()=>{
             const ai = aiClassify(desc);
             const cat_ = CATEGORIES.find(k=>k.id===ai.category);
             return (
@@ -1830,13 +2425,19 @@ function CitizenSubmitForm({ onSubmit, onClose, existingComplaints=[] }) {
               const check = validateReadability(desc);
               if (!check.readable) { setReadabilityErr(check.reason); return; }
               setReadabilityErr("");
+              // Run category mismatch check
+              if (cat) {
+                const mismatch = validateCategoryMatch(cat, desc);
+                if (!mismatch.match) { setCategoryMismatchErr(mismatch.reason); return; }
+              }
+              setCategoryMismatchErr("");
               // Run duplicate check
               const dups = findSimilarComplaints(desc, existingComplaints);
               setDuplicates(dups);
               // Run AI classify and cache it
               setAiPreview(aiClassify(desc));
               setStep(3);
-            }} style={{flex:2,padding:11,background:(!desc||!addr)?"var(--sc-border)":`linear-gradient(135deg,#38BDF8,#38BDF8)`,color:(!desc||!addr)?"#9CA3AF":"var(--sc-surface)",border:"none",borderRadius:10,fontSize:14,fontWeight:600,cursor:(!desc||!addr)?"not-allowed":"pointer"}}>
+            }}style={{flex:2,padding:11,background:(!desc||!addr)?"var(--sc-border)":`linear-gradient(135deg,#38BDF8,#38BDF8)`,color:(!desc||!addr)?"#9CA3AF":"var(--sc-surface)",border:"none",borderRadius:10,fontSize:14,fontWeight:600,cursor:(!desc||!addr)?"not-allowed":"pointer"}}>
               Continue →
             </button>
           </div>
@@ -2005,7 +2606,7 @@ function CitizenSubmitForm({ onSubmit, onClose, existingComplaints=[] }) {
           {photoPreview?(
             <div style={{position:"relative",marginBottom:14}}>
               <img src={photoPreview} alt="preview" style={{width:"100%",maxHeight:200,objectFit:"cover",borderRadius:12,border:"1.5px solid var(--sc-border)"}}/>
-              <button onClick={()=>{setPhoto(null);setPhotoPreview(null);}} style={{position:"absolute",top:8,right:8,background:"rgba(0,0,0,.6)",color:"var(--sc-surface)",border:"none",borderRadius:"50%",width:28,height:28,cursor:"pointer",fontSize:14}}>✕</button>
+              <button onClick={()=>{setPhoto(null);setPhotoPreview(null);setImageValidation(null);setImageValidationErr("");}} style={{position:"absolute",top:8,right:8,background:"rgba(0,0,0,.6)",color:"var(--sc-surface)",border:"none",borderRadius:"50%",width:28,height:28,cursor:"pointer",fontSize:14}}>✕</button>
             </div>
           ):(
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
@@ -2019,12 +2620,89 @@ function CitizenSubmitForm({ onSubmit, onClose, existingComplaints=[] }) {
               </div>
             </div>
           )}
-          <input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f){setPhoto(f);const r=new FileReader();r.onload=ev=>setPhotoPreview(ev.target.result);r.readAsDataURL(f);}}}/>
-          <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f){setPhoto(f);const r=new FileReader();r.onload=ev=>setPhotoPreview(ev.target.result);r.readAsDataURL(f);}}}/>
+          {/* Image validation result panel */}
+          {imageValidation==="checking"&&(
+            <div style={{padding:"12px 14px",background:"rgba(56,189,248,0.1)",borderRadius:10,border:"1px solid rgba(56,189,248,0.3)",marginBottom:12,fontSize:13,color:"#818CF8",display:"flex",alignItems:"center",gap:10}}>
+              <div style={{width:16,height:16,border:"2px solid #818CF8",borderTopColor:"transparent",borderRadius:"50%",animation:"spin 0.8s linear infinite",flexShrink:0}}/>
+              Analysing image…
+              <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+            </div>
+          )}
+          {imageValidation&&imageValidation!=="checking"&&(
+            <div style={{padding:"12px 14px",borderRadius:10,border:`1px solid ${imageValidation.valid?"rgba(52,211,153,0.4)":"rgba(248,113,113,0.4)"}`,background:imageValidation.valid?"rgba(52,211,153,0.08)":"rgba(248,113,113,0.08)",marginBottom:12,fontSize:12}}>
+              {/* ── Header row ── */}
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{fontWeight:700,fontSize:13,color:imageValidation.valid?"#34D399":"#F87171"}}>
+                  {imageValidation.valid?"✅ Image Accepted":"❌ Image Rejected"}
+                </span>
+                <span style={{fontWeight:700,color:imageValidation.valid?"#34D399":"#F87171",fontSize:12}}>
+                  {imageValidation.confidence}% confidence
+                </span>
+              </div>
+              {/* ── Confidence bar ── */}
+              <div style={{height:6,background:"var(--sc-surface2)",borderRadius:3,overflow:"hidden",marginBottom:8}}>
+                <div style={{height:"100%",width:`${imageValidation.confidence}%`,background:imageValidation.confidence>=70?"#34D399":imageValidation.confidence>=40?"#FBBF24":"#F87171",borderRadius:3,transition:"width .5s"}}/>
+              </div>
+              {/* ── Reason text ── */}
+              <div style={{color:imageValidation.valid?"#166534":"#F87171",marginBottom:imageValidation.detectedObjects?.length?"6px":"0",lineHeight:1.5}}>
+                {imageValidation.reason}
+              </div>
+              {/* ── Detected objects tags ── */}
+              {imageValidation.detectedObjects?.length>0&&(
+                <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:"8px"}}>
+                  {imageValidation.detectedObjects.map((obj,i)=>(
+                    <span key={i} style={{fontSize:10,padding:"2px 8px",borderRadius:20,background:imageValidation.valid?"rgba(52,211,153,0.15)":"rgba(248,113,113,0.12)",color:imageValidation.valid?"#166534":"#F87171",fontWeight:600,border:`1px solid ${imageValidation.valid?"rgba(52,211,153,0.3)":"rgba(248,113,113,0.3)"}`}}>
+                      {obj}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {/* ── Suggestion for rejected images ── */}
+              {!imageValidation.valid&&imageValidation.suggestion&&(
+                <div style={{marginTop:4,fontSize:11,color:"#FBBF24",background:"rgba(251,191,36,0.08)",padding:"6px 10px",borderRadius:7,border:"1px solid rgba(251,191,36,0.25)",marginBottom:8}}>
+                  💡 {imageValidation.suggestion}
+                </div>
+              )}
+              {/* ── Action buttons — shown for BOTH accepted and rejected ── */}
+              <div style={{display:"flex",gap:8,marginTop:10}}>
+                <button
+                  onClick={()=>{
+                    setPhoto(null);
+                    setPhotoPreview(null);
+                    setImageValidation(null);
+                    setImageValidationErr("");
+                    setTimeout(()=>fileRef.current?.click(),100);
+                  }}
+                  style={{flex:1,padding:"8px",background:"rgba(56,189,248,0.1)",color:"#38BDF8",border:"1px solid rgba(56,189,248,0.4)",borderRadius:8,fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+                  🔄 Replace Photo
+                </button>
+                <button
+                  onClick={()=>{
+                    setPhoto(null);
+                    setPhotoPreview(null);
+                    setImageValidation(null);
+                    setImageValidationErr("");
+                  }}
+                  style={{flex:1,padding:"8px",background:"rgba(248,113,113,0.08)",color:"#F87171",border:"1px solid rgba(248,113,113,0.4)",borderRadius:8,fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+                  🗑️ Remove Photo
+                </button>
+              </div>
+            </div>
+          )}
+          <input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={async e=>{const f=e.target.files[0];if(f){setPhoto(f);setImageValidation("checking");setImageValidationErr("");const r=new FileReader();r.onload=ev=>setPhotoPreview(ev.target.result);r.readAsDataURL(f);const result=await validateImageWithAI(f,cat);setImageValidation(result);if(!result.valid)setImageValidationErr(result.reason);}}}/>
+          <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}} onChange={async e=>{const f=e.target.files[0];if(f){setPhoto(f);setImageValidation("checking");setImageValidationErr("");const r=new FileReader();r.onload=ev=>setPhotoPreview(ev.target.result);r.readAsDataURL(f);const result=await validateImageWithAI(f,cat);setImageValidation(result);if(!result.valid)setImageValidationErr(result.reason);}}}/>
 
           <div style={{display:"flex",gap:10,marginTop:8}}>
             <button onClick={()=>setStep(2)} style={{flex:1,padding:11,background:"var(--sc-surface2)",border:"1.5px solid var(--sc-border)",borderRadius:10,fontSize:14,cursor:"pointer"}}>← Back</button>
-            <button onClick={()=>setStep(4)} disabled={!coords} style={{flex:2,padding:11,background:coords?`linear-gradient(135deg,#38BDF8,#38BDF8)`:"var(--sc-border)",color:coords?"var(--sc-surface)":"#9CA3AF",border:"none",borderRadius:10,fontSize:14,fontWeight:600,cursor:coords?"pointer":"not-allowed"}}>Continue →</button>
+           <button onClick={()=>{
+              if(photo&&imageValidation&&imageValidation!=="checking"&&!imageValidation.valid){
+                setImageValidationErr("Please remove the rejected image and upload a valid photo of the issue before continuing.");
+                return;
+              }
+              setStep(4);
+            }} disabled={!coords||(imageValidation==="checking")} style={{flex:2,padding:11,background:(!coords||(imageValidation==="checking"))?"var(--sc-border)":`linear-gradient(135deg,#38BDF8,#38BDF8)`,color:(!coords||(imageValidation==="checking"))?"#9CA3AF":"var(--sc-surface)",border:"none",borderRadius:10,fontSize:14,fontWeight:600,cursor:(!coords||(imageValidation==="checking"))?"not-allowed":"pointer"}}>
+              {imageValidation==="checking"?"Analysing image…":"Continue →"}
+            </button>
           </div>
         </div>
       )}
@@ -2038,7 +2716,7 @@ function CitizenSubmitForm({ onSubmit, onClose, existingComplaints=[] }) {
               ["Location",addr],
               ["Description",desc.slice(0,80)+(desc.length>80?"…":"")],
               ["GPS",coords?`${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`:"Not captured"],
-              ["Photo",photo?`📷 ${photo.name}`:"No photo"],
+              ["Photo",photo?(imageValidation&&imageValidation!=="checking"?(imageValidation.valid?`✅ ${photo.name} (${imageValidation.confidence}% match)`:`❌ ${photo.name} — rejected`):`📷 ${photo.name}`):"No photo"],
             ].map(([k,v])=>(
               <div key={k} style={{display:"flex",gap:12,marginBottom:8,fontSize:13}}>
                 <span style={{color:"var(--sc-text3)",minWidth:84,fontWeight:600}}>{k}</span>
@@ -4657,17 +5335,18 @@ function CouncillorDashboard({ user, onLogout }) {
    ROOT APP — ROLE-BASED ROUTING
 ═══════════════════════════════════════════════════════════════════ */
 export default function App() {
-  const [screen,setScreen]=useState("login");
+  const [screen,setScreen]=useState("landing");
   const [user,setUser]=useState(null);
 
   const login=u=>{
     setUser({id:u.id,name:u.full_name||u.name||"User",full_name:u.full_name||u.name||"User",email:u.email||"",role:u.role||"Citizen",id_number:u.id_number||""});
     setScreen("portal");
   };
-  const logout=()=>{localStorage.removeItem("token");setUser(null);setScreen("login");};
+  const logout=()=>{localStorage.removeItem("token");setUser(null);setScreen("landing");};
   const registered=()=>setScreen("login");
 
-  if(screen==="login")    return <LoginPage onLogin={login} onGoRegister={()=>setScreen("register")} onForgotPassword={()=>setScreen("forgot")}/>;
+  if(screen==="landing")  return <LandingPage onGoLogin={()=>setScreen("login")} onGoRegister={()=>setScreen("register")}/>;
+  if(screen==="login")    return <LoginPage onLogin={login} onGoRegister={()=>setScreen("register")} onForgotPassword={()=>setScreen("forgot")} onGoHome={()=>setScreen("landing")}/>;
   if(screen==="register") return <RegisterPage onBack={()=>setScreen("login")} onRegistered={registered}/>;
   if(screen==="forgot")   return <ForgotPasswordPage onBack={()=>setScreen("login")}/>;
 
