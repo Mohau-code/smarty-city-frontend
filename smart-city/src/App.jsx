@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const API = "http://localhost:3001";
+const API = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
 /* ─── DESIGN TOKENS ─────────────────────────────────────────────── */
 // Injecting global styles for the enterprise Smart City design system
